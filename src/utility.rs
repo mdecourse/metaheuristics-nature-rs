@@ -1,6 +1,4 @@
 use crate::*;
-#[cfg(feature = "cli")]
-use indicatif::ProgressBar;
 use ndarray::{s, Array1, Array2, AsArray};
 use std::time::Instant;
 
@@ -46,45 +44,12 @@ setting_builder! {
     }
 }
 
-#[cfg(feature = "cli")]
-struct PB(Option<ProgressBar>);
-#[cfg(not(feature = "cli"))]
-struct PB;
-
-impl PB {
-    fn new(_len: u32) -> Self {
-        #[cfg(feature = "cli")]
-        if _len > 0 {
-            Self(Some(ProgressBar::new(_len as u64)))
-        } else {
-            Self(None)
-        }
-        #[cfg(not(feature = "cli"))]
-        Self
-    }
-
-    fn inc(&self) {
-        #[cfg(feature = "cli")]
-        if let Some(pb) = &self.0 {
-            pb.inc(1);
-        }
-    }
-
-    fn finish(&self) {
-        #[cfg(feature = "cli")]
-        if let Some(pb) = &self.0 {
-            pb.finish();
-        }
-    }
-}
-
 /// The base class of algorithms.
 /// Please see [`Algorithm`] for more information.
 pub struct AlgorithmBase<F: ObjFunc> {
     pub pop_num: usize,
     pub dim: usize,
     pub gen: u32,
-    pb: PB,
     rpt: u32,
     pub task: Task,
     pub best_f: f64,
@@ -104,15 +69,10 @@ impl<F: ObjFunc> AlgorithmBase<F> {
             assert_eq!(lb.len(), ub.len(), "different dimension of the variables!");
             lb.len()
         };
-        let pb_gen = match settings.task {
-            Task::MaxGen(gen) if cfg!(feature = "cli") => gen,
-            _ => 0,
-        };
         Self {
             pop_num: settings.pop_num,
             dim,
             gen: 0,
-            pb: PB::new(pb_gen),
             rpt: settings.rpt,
             task: settings.task,
             best_f: f64::INFINITY,
@@ -147,23 +107,28 @@ impl<F: ObjFunc> AlgorithmBase<F> {
 ///     tmp: Vec<f64>,
 ///     base: AlgorithmBase<F>,
 /// }
-/// impl<F: ObjFunc> MyAlgorithm<F> {
-///     fn new(func: F, settings: Setting) -> Self {
+/// impl<F: ObjFunc> Algorithm<F> for MyAlgorithm<F> {
+///     type Setting = Setting;
+///     fn create(func: F, settings: Self::Setting) -> Self {
 ///         let base = AlgorithmBase::new(func, settings);
 ///         Self {
 ///             tmp: vec![],
 ///             base,
 ///         }
 ///     }
-/// }
-/// impl<F: ObjFunc> Algorithm<F> for MyAlgorithm<F> {
 ///     fn base(&self) -> &AlgorithmBase<F> { &self.base }
 ///     fn base_mut(&mut self) -> &mut AlgorithmBase<F> { &mut self.base }
 ///     fn generation(&mut self) { unimplemented!() }
 /// }
 /// ```
 /// Your algorithm will be implemented [Solver](trait.Solver.html) automatically.
-pub trait Algorithm<F: ObjFunc> {
+pub trait Algorithm<F: ObjFunc>: Sized {
+    /// The setting type of the algorithm.
+    type Setting;
+
+    /// Create the task.
+    fn create(func: F, settings: Self::Setting) -> Self;
+
     /// Return a base handle.
     fn base(&self) -> &AlgorithmBase<F>;
 
@@ -234,7 +199,7 @@ pub trait Algorithm<F: ObjFunc> {
         }
     }
 
-    /// Check the bounds.
+    /// Check the bounds of the index `s` with the value `v`.
     fn check(&self, s: usize, v: f64) -> f64 {
         if v > self.ub(s) {
             self.ub(s)
@@ -244,24 +209,12 @@ pub trait Algorithm<F: ObjFunc> {
             v
         }
     }
-}
 
-/// The public API for [`Algorithm`].
-pub trait Solver<F: ObjFunc>: Algorithm<F> {
-    /// Get the history for plotting.
-    fn history(&self) -> Vec<Report> {
-        self.base().reports.clone()
-    }
-
-    /// Return the x and y of function.
-    /// The algorithm must be executed once.
-    fn result(&self) -> (Array1<f64>, f64) {
-        let b = self.base();
-        (b.best.clone(), b.best_f)
-    }
-
-    /// Start the algorithm and return the final result.
-    fn run(&mut self) -> F::Result {
+    /// Start the algorithm process.
+    ///
+    /// Support a callback function, such as progress bar.
+    /// To suppress it, just using a empty lambda `|| {}`.
+    fn run(mut self, callback: impl Fn()) -> Self {
         self.base_mut().gen = 0;
         self.base_mut().time_start = Instant::now();
         self.init_pop();
@@ -281,7 +234,7 @@ pub trait Solver<F: ObjFunc>: Algorithm<F> {
             let b = self.base_mut();
             match b.task {
                 Task::MaxGen(v) => {
-                    b.pb.inc();
+                    callback();
                     if b.gen >= v {
                         break;
                     }
@@ -305,9 +258,34 @@ pub trait Solver<F: ObjFunc>: Algorithm<F> {
                 }
             }
         }
-        self.base().pb.finish();
         self.base_mut().report();
-        self.base().func.result(&self.base().best)
+        self
+    }
+}
+
+/// The public API for [`Algorithm`].
+pub trait Solver<F: ObjFunc>: Algorithm<F> {
+    /// Create the task and calling [`Algorithm::run`].
+    fn solve(func: F, settings: Self::Setting, callback: impl Fn()) -> Self {
+        Self::create(func, settings).run(callback)
+    }
+
+    /// Get the history for plotting.
+    fn history(&self) -> Vec<Report> {
+        self.base().reports.clone()
+    }
+
+    /// Return the x and y of function.
+    /// The algorithm must be executed once.
+    fn parameters(&self) -> (Array1<f64>, f64) {
+        let b = self.base();
+        (b.best.clone(), b.best_f)
+    }
+
+    /// Get the result of the objective function.
+    fn result(&self) -> F::Result {
+        let b = self.base();
+        b.func.result(&b.best)
     }
 }
 

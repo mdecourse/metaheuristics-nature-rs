@@ -22,11 +22,13 @@ pub struct PSO<F: ObjFunc> {
     base: AlgorithmBase<F>,
 }
 
-impl<F> PSO<F>
+impl<F> Algorithm<F> for PSO<F>
 where
     F: ObjFunc,
 {
-    pub fn new(func: F, settings: PSOSetting) -> Self {
+    type Setting = PSOSetting;
+
+    fn create(func: F, settings: Self::Setting) -> Self {
         let base = AlgorithmBase::new(func, settings.base);
         Self {
             cognition: settings.cognition,
@@ -37,20 +39,13 @@ where
             base,
         }
     }
-}
 
-impl<F> Algorithm<F> for PSO<F>
-where
-    F: ObjFunc,
-{
     fn base(&self) -> &AlgorithmBase<F> {
         &self.base
     }
-
     fn base_mut(&mut self) -> &mut AlgorithmBase<F> {
         &mut self.base
     }
-
     fn init(&mut self) {
         self.best_past = self.base.pool.clone();
         self.best_f_past = self.base.fitness.clone();
