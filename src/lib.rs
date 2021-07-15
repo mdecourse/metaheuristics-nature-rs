@@ -8,7 +8,7 @@
 //! # }
 //! # impl ObjFunc for MyFunc {
 //! #     type Result = f64;
-//! #     fn fitness<'a, A>(&self, gen: u32, v: A) -> f64
+//! #     fn fitness<'a, A>(&self, v: A, _: &Report) -> f64
 //! #     where
 //! #         A: AsArray<'a, f64>,
 //! #     {
@@ -19,15 +19,16 @@
 //! #     where
 //! #         V: AsArray<'a, f64>
 //! #     {
-//! #         self.fitness(0, v)
+//! #         self.fitness(v, &Default::default())
 //! #     }
 //! #     fn ub(&self) -> ArrayView1<f64> { self.1.view() }
 //! #     fn lb(&self) -> ArrayView1<f64> { self.0.view() }
 //! # }
+//!
 //! let a = RGA::solve(
 //!     MyFunc::new(),
 //!     RGASetting::default().task(Task::MinFit(1e-20)),
-//!     || {} // Run without callback
+//!     () // Run without callback
 //! );
 //! let ans: f64 = a.result(); // Get the result from objective function
 //! let (x, y): (Array1<f64>, f64) = a.parameters(); // Get the optimized XY value of your function
@@ -48,12 +49,16 @@
 //! And then you should define the upper bound, lower bound, and objective function [`ObjFunc::fitness`] by yourself.
 //!
 //! The final answer is [`ObjFunc::result`], which is generated from the design parameters.
-pub use crate::de::*;
-pub use crate::fa::*;
+//!
+//! # Features
+//!
+//! + `parallel`: Enable parallel function, let objective function running without ordered,
+//!   uses [`std::thread::spawn`].
+//!   Disable it for the platform that doesn't supported threading,
+//!   or if your objective function is not complicate enough.
+pub use crate::callback::*;
+pub use crate::methods::*;
 pub use crate::obj_func::*;
-pub use crate::pso::*;
-pub use crate::rga::*;
-pub use crate::tlbo::*;
 pub use crate::utility::*;
 
 /// Generate random values between [0., 1.) or by range.
@@ -114,8 +119,11 @@ macro_rules! setting_builder {
         impl $name {
             $(setting_builder! {
                 @$base,
+                /// Termination condition.
                 task: $crate::Task,
+                /// Population number.
                 pop_num: usize,
+                /// The report frequency. (per generation)
                 rpt: u32,
             })?
             $($(#[$field_attr])* pub fn $field(mut self, $field: $field_type) -> Self {
@@ -132,20 +140,19 @@ macro_rules! setting_builder {
             }
         }
     };
-    (@$base:ident, $($field:ident: $field_type:ty,)+) => {
-        $(pub fn $field(mut self, $field: $field_type) -> Self {
+    (@$base:ident, $($(#[$field_attr:meta])* $field:ident: $field_type:ty,)+) => {
+        $($(#[$field_attr])* pub fn $field(mut self, $field: $field_type) -> Self {
             self.$base = self.$base.$field($field);
             self
         })+
     }
 }
 
-mod de;
-mod fa;
+mod callback;
+mod methods;
 mod obj_func;
-mod pso;
-mod rga;
 #[cfg(test)]
 mod tests;
-mod tlbo;
+#[cfg(feature = "parallel")]
+pub mod thread_pool;
 mod utility;

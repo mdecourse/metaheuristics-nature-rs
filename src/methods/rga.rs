@@ -6,9 +6,13 @@ setting_builder! {
     pub struct RGASetting {
         @base,
         @pop_num = 500,
+        /// Crossing probability.
         cross: f64 = 0.95,
+        /// Mutation probability.
         mutate: f64 = 0.05,
+        /// Winning probability.
         win: f64 = 0.95,
+        /// Delta factor.
         delta: f64 = 5.,
     }
 }
@@ -37,17 +41,32 @@ where
             let mut f_tmp = Array1::zeros(3);
             for s in 0..self.base.dim {
                 tmp[[0, s]] = 0.5 * self.base.pool[[i, s]] + 0.5 * self.base.pool[[i + 1, s]];
-                tmp[[1, s]] = self.check(
-                    s,
-                    1.5 * self.base.pool[[i, s]] - 0.5 * self.base.pool[[i + 1, s]],
-                );
-                tmp[[2, s]] = self.check(
-                    s,
-                    -0.5 * self.base.pool[[i, s]] + 1.5 * self.base.pool[[i + 1, s]],
-                );
+                let v = 1.5 * self.base.pool[[i, s]] - 0.5 * self.base.pool[[i + 1, s]];
+                tmp[[1, s]] = self.check(s, v);
+                let v = -0.5 * self.base.pool[[i, s]] + 1.5 * self.base.pool[[i + 1, s]];
+                tmp[[2, s]] = self.check(s, v);
             }
+            #[cfg(feature = "parallel")]
+            let mut tasks = crate::thread_pool::ThreadPool::new();
             for j in 0..3 {
-                f_tmp[j] = self.base.func.fitness(self.base.gen, tmp.slice(s![j, ..]));
+                #[cfg(feature = "parallel")]
+                tasks.insert(
+                    j,
+                    self.base.func.clone(),
+                    self.base.report.clone(),
+                    tmp.slice(s![j, ..]),
+                );
+                #[cfg(not(feature = "parallel"))]
+                {
+                    f_tmp[j] = self
+                        .base
+                        .func
+                        .fitness(tmp.slice(s![j, ..]), &self.base.report);
+                }
+            }
+            #[cfg(feature = "parallel")]
+            for (j, f) in tasks {
+                f_tmp[j] = f;
             }
             if f_tmp[0] > f_tmp[1] {
                 f_tmp.swap(0, 1);
@@ -74,7 +93,7 @@ where
 
     fn get_delta(&self, y: f64) -> f64 {
         let r = match self.base.task {
-            Task::MaxGen(v) if v > 0 => self.base.gen as f64 / v as f64,
+            Task::MaxGen(v) if v > 0 => self.base.report.gen as f64 / v as f64,
             _ => 1.,
         };
         y * rand!() * (1. - r).powf(self.delta)
@@ -115,7 +134,7 @@ where
             self.base.pool.assign(&self.new_pool);
             self.assign_from(
                 rand!(0, self.base.pop_num),
-                self.base.best_f,
+                self.base.report.best_f,
                 &self.base.best.clone(),
             );
         }
@@ -141,17 +160,24 @@ where
         }
     }
 
+    #[inline(always)]
     fn base(&self) -> &AlgorithmBase<F> {
         &self.base
     }
+
+    #[inline(always)]
     fn base_mut(&mut self) -> &mut AlgorithmBase<F> {
         &mut self.base
     }
+
+    #[inline(always)]
     fn generation(&mut self) {
         self.select();
         self.crossover();
         self.mutate();
     }
+
+    #[inline(always)]
     fn check(&self, s: usize, v: f64) -> f64 {
         if self.ub(s) < v || self.lb(s) > v {
             rand!(self.lb(s), self.ub(s))

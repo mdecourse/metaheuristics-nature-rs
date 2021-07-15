@@ -12,11 +12,12 @@ impl Default for TestObj {
 impl ObjFunc for TestObj {
     type Result = f64;
 
-    fn fitness<'a, A>(&self, _gen: u32, v: A) -> f64
+    fn fitness<'a, A>(&self, v: A, _: &Report) -> f64
     where
         A: AsArray<'a, f64>,
     {
         let v = v.into();
+        // std::thread::sleep(std::time::Duration::from_millis(100));
         v[0] * v[0] + 8. * v[1] * v[1] + v[2] * v[2] + v[3] * v[3]
     }
 
@@ -24,7 +25,7 @@ impl ObjFunc for TestObj {
     where
         V: AsArray<'a, f64>,
     {
-        self.fitness(0, v)
+        self.fitness(v, &Default::default())
     }
 
     fn ub(&self) -> ArrayView1<f64> {
@@ -39,7 +40,7 @@ fn test<S>(obj: TestObj, setting: S::Setting)
 where
     S: Solver<TestObj>,
 {
-    let a = S::solve(obj, setting, || {});
+    let a = S::solve(obj, setting, ());
     let ans = a.result();
     let (x, y) = a.parameters();
     let history = a.history();

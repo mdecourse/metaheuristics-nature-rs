@@ -16,13 +16,13 @@ where
     F: ObjFunc,
 {
     fn register(&mut self, i: usize) {
-        let f_new = self.base.func.fitness(self.base.gen, &self.tmp);
+        let f_new = self.base.func.fitness(&self.tmp, &self.base.report);
         if f_new < self.base.fitness[i] {
             self.base.pool.slice_mut(s![i, ..]).assign(&self.tmp);
             self.base.fitness[i] = f_new;
         }
-        if f_new < self.base.best_f {
-            self.set_best(i);
+        if f_new < self.base.report.best_f {
+            self.base.set_best(i);
         }
     }
 
@@ -34,11 +34,9 @@ where
                 mean += self.base.pool[[j, s]];
             }
             mean /= self.base.dim as f64;
-            self.tmp[s] = self.check(
-                s,
-                self.base.pool[[i, s]]
-                    + rand!(1., self.base.dim as f64) * (self.base.best[s] - tf * mean),
-            );
+            let v = self.base.pool[[i, s]]
+                + rand!(1., self.base.dim as f64) * (self.base.best[s] - tf * mean);
+            self.tmp[s] = self.check(s, v);
         }
         self.register(i);
     }
@@ -58,10 +56,8 @@ where
             } else {
                 self.base.pool[[j, s]] - self.base.pool[[i, s]]
             };
-            self.tmp[s] = self.check(
-                s,
-                self.base.pool[[i, s]] + rand!(1., self.base.dim as f64) * diff,
-            );
+            let v = self.base.pool[[i, s]] + rand!(1., self.base.dim as f64) * diff;
+            self.tmp[s] = self.check(s, v);
         }
         self.register(i);
     }
@@ -81,12 +77,17 @@ where
         }
     }
 
+    #[inline(always)]
     fn base(&self) -> &AlgorithmBase<F> {
         &self.base
     }
+
+    #[inline(always)]
     fn base_mut(&mut self) -> &mut AlgorithmBase<F> {
         &mut self.base
     }
+
+    #[inline(always)]
     fn generation(&mut self) {
         for i in 0..self.base.pop_num {
             self.teaching(i);

@@ -1,6 +1,39 @@
 use crate::*;
 use ndarray::{s, Array1, Array2, AsArray};
-use std::time::Instant;
+use std::{sync::Arc, time::Instant};
+
+/// The data of generation sampling.
+#[derive(Clone, Debug)]
+pub struct Report {
+    /// Generation.
+    pub gen: u32,
+    /// The best fitness.
+    pub best_f: f64,
+    /// Time duration.
+    pub time: f64,
+}
+
+impl Default for Report {
+    fn default() -> Self {
+        Self {
+            gen: 0,
+            best_f: f64::INFINITY,
+            time: 0.,
+        }
+    }
+}
+
+impl Report {
+    /// Go into next generation.
+    pub fn next_gen(&mut self) {
+        self.gen += 1;
+    }
+
+    /// Update time by a starting point.
+    pub fn update_time(&mut self, time: Instant) {
+        self.time = (Instant::now() - time).as_secs_f64();
+    }
+}
 
 /// The terminal condition of the algorithm setting.
 pub enum Task {
@@ -14,32 +47,14 @@ pub enum Task {
     SlowDown(f64),
 }
 
-/// The data of generation sampling.
-#[derive(Clone)]
-pub struct Report {
-    /// Generation.
-    pub gen: u32,
-    /// Best fitness.
-    pub best_f: f64,
-    /// Time duration.
-    pub time: f64,
-}
-
-impl Report {
-    pub fn new(gen: u32, best_f: f64, time_start: Instant) -> Self {
-        Self {
-            gen,
-            best_f,
-            time: (Instant::now() - time_start).as_secs_f64(),
-        }
-    }
-}
-
 setting_builder! {
     /// Base settings.
     pub struct Setting {
+        /// Termination condition.
         task: Task = Task::MaxGen(200),
+        /// Population number.
         pop_num: usize = 200,
+        /// The report frequency. (per generation)
         rpt: u32 = 50,
     }
 }
@@ -47,18 +62,24 @@ setting_builder! {
 /// The base class of algorithms.
 /// Please see [`Algorithm`] for more information.
 pub struct AlgorithmBase<F: ObjFunc> {
+    /// Population number.
     pub pop_num: usize,
+    /// Dimension, the variable number of the problem.
     pub dim: usize,
-    pub gen: u32,
     rpt: u32,
+    /// Termination condition.
     pub task: Task,
-    pub best_f: f64,
+    /// The best variables.
     pub best: Array1<f64>,
+    /// Current fitness of all individuals.
     pub fitness: Array1<f64>,
+    /// Current variables of all individuals.
     pub pool: Array2<f64>,
-    time_start: Instant,
+    /// The current information of the algorithm.
+    pub report: Report,
     reports: Vec<Report>,
-    pub func: F,
+    /// The objective function.
+    pub func: Arc<F>,
 }
 
 impl<F: ObjFunc> AlgorithmBase<F> {
@@ -72,28 +93,41 @@ impl<F: ObjFunc> AlgorithmBase<F> {
         Self {
             pop_num: settings.pop_num,
             dim,
-            gen: 0,
             rpt: settings.rpt,
             task: settings.task,
-            best_f: f64::INFINITY,
             best: Array1::zeros(dim),
             fitness: Array1::zeros(settings.pop_num),
             pool: Array2::zeros((settings.pop_num, dim)),
-            time_start: Instant::now(),
+            report: Default::default(),
             reports: vec![],
-            func,
+            func: Arc::new(func),
         }
+    }
+
+    #[inline(always)]
+    pub fn lb(&self, i: usize) -> f64 {
+        self.func.lb()[i]
+    }
+
+    #[inline(always)]
+    pub fn ub(&self, i: usize) -> f64 {
+        self.func.ub()[i]
     }
 
     /// Get fitness from individual `i`.
     pub fn fitness(&mut self, i: usize) {
-        self.fitness[i] = self.func.fitness(self.gen, self.pool.slice(s![i, ..]));
+        self.fitness[i] = self.func.fitness(self.pool.slice(s![i, ..]), &self.report);
+    }
+
+    /// Set the index to best.
+    pub fn set_best(&mut self, i: usize) {
+        self.report.best_f = self.fitness[i];
+        self.best.assign(&self.pool.slice(s![i, ..]));
     }
 
     /// Record the performance.
     fn report(&mut self) {
-        self.reports
-            .push(Report::new(self.gen, self.best_f, self.time_start));
+        self.reports.push(self.report.clone());
     }
 }
 
@@ -103,17 +137,18 @@ impl<F: ObjFunc> AlgorithmBase<F> {
 /// Create a structure and store a `AlgorithmBase` member to implement it.
 /// ```
 /// use metaheuristics_nature::{AlgorithmBase, Algorithm, ObjFunc, Setting};
+///
 /// struct MyAlgorithm<F: ObjFunc> {
 ///     tmp: Vec<f64>,
 ///     base: AlgorithmBase<F>,
 /// }
+///
 /// impl<F: ObjFunc> Algorithm<F> for MyAlgorithm<F> {
 ///     type Setting = Setting;
 ///     fn create(func: F, settings: Self::Setting) -> Self {
-///         let base = AlgorithmBase::new(func, settings);
 ///         Self {
 ///             tmp: vec![],
-///             base,
+///             base: AlgorithmBase::new(func, settings),
 ///         }
 ///     }
 ///     fn base(&self) -> &AlgorithmBase<F> { &self.base }
@@ -142,13 +177,15 @@ pub trait Algorithm<F: ObjFunc>: Sized {
     fn generation(&mut self);
 
     /// Get lower bound with index.
+    #[inline(always)]
     fn lb(&self, i: usize) -> f64 {
-        self.base().func.lb()[i]
+        self.base().lb(i)
     }
 
     /// Get upper bound with index.
+    #[inline(always)]
     fn ub(&self, i: usize) -> f64 {
-        self.base().func.ub()[i]
+        self.base().ub(i)
     }
 
     /// Assign from source.
@@ -161,13 +198,6 @@ pub trait Algorithm<F: ObjFunc>: Sized {
         b.pool.slice_mut(s![i, ..]).assign(&v.into());
     }
 
-    /// Set the index to best.
-    fn set_best(&mut self, i: usize) {
-        let b = self.base_mut();
-        b.best_f = b.fitness[i];
-        b.best.assign(&b.pool.slice(s![i, ..]));
-    }
-
     /// Find the best, and set it globally.
     fn find_best(&mut self) {
         let b = self.base_mut();
@@ -177,26 +207,39 @@ pub trait Algorithm<F: ObjFunc>: Sized {
                 best = i;
             }
         }
-        if b.fitness[best] < b.best_f {
-            self.set_best(best);
+        if b.fitness[best] < b.report.best_f {
+            b.set_best(best);
         }
     }
 
     /// Initialize population.
     fn init_pop(&mut self) {
+        let b = self.base_mut();
+        #[cfg(feature = "parallel")]
+        let mut tasks = crate::thread_pool::ThreadPool::new();
         let mut best = 0;
-        for i in 0..self.base().pop_num {
-            for s in 0..self.base().dim {
-                self.base_mut().pool[[i, s]] = rand!(self.lb(s), self.ub(s));
+        for i in 0..b.pop_num {
+            for s in 0..b.dim {
+                b.pool[[i, s]] = rand!(b.lb(s), b.ub(s));
             }
-            self.base_mut().fitness(i);
-            if self.base().fitness[i] < self.base().fitness[best] {
+            #[cfg(feature = "parallel")]
+            tasks.insert(i, b.func.clone(), b.report.clone(), b.pool.slice(s![i, ..]));
+            #[cfg(not(feature = "parallel"))]
+            {
+                b.fitness(i);
+                if b.fitness[i] < b.fitness[best] {
+                    best = i;
+                }
+            }
+        }
+        #[cfg(feature = "parallel")]
+        for (i, f) in tasks {
+            b.fitness[i] = f;
+            if b.fitness[i] < b.fitness[best] {
                 best = i;
             }
         }
-        if self.base().fitness[best] < self.base().best_f {
-            self.set_best(best);
-        }
+        b.set_best(best);
     }
 
     /// Check the bounds of the index `s` with the value `v`.
@@ -210,47 +253,50 @@ pub trait Algorithm<F: ObjFunc>: Sized {
         }
     }
 
-    /// Start the algorithm process.
-    ///
-    /// Support a callback function, such as progress bar.
-    /// To suppress it, just using a empty lambda `|| {}`.
-    fn run(mut self, callback: impl Fn()) -> Self {
-        self.base_mut().gen = 0;
-        self.base_mut().time_start = Instant::now();
+    #[doc(hidden)]
+    fn run<C>(mut self, mut callback: impl Callback<C>) -> Self {
+        let time_start = Instant::now();
         self.init_pop();
+        self.base_mut().report.update_time(time_start);
         self.init();
+        if callback.call(self.base().report.clone()) {
+            return self;
+        }
         self.base_mut().report();
         let mut last_diff = 0.;
         loop {
             let best_f = {
-                let b = self.base_mut();
-                b.gen += 1;
-                b.best_f
+                let r = &mut self.base_mut().report;
+                r.next_gen();
+                r.update_time(time_start);
+                r.best_f
             };
             self.generation();
-            if self.base().gen % self.base().rpt == 0 {
-                self.base_mut().report();
-            }
             let b = self.base_mut();
+            if b.report.gen % b.rpt == 0 {
+                if callback.call(b.report.clone()) {
+                    break;
+                }
+                b.report();
+            }
             match b.task {
                 Task::MaxGen(v) => {
-                    callback();
-                    if b.gen >= v {
+                    if b.report.gen >= v {
                         break;
                     }
                 }
                 Task::MinFit(v) => {
-                    if b.best_f <= v {
+                    if b.report.best_f <= v {
                         break;
                     }
                 }
                 Task::MaxTime(v) => {
-                    if (Instant::now() - b.time_start).as_secs_f32() >= v {
+                    if (Instant::now() - time_start).as_secs_f32() >= v {
                         break;
                     }
                 }
                 Task::SlowDown(v) => {
-                    let diff = best_f - b.best_f;
+                    let diff = best_f - b.report.best_f;
                     if last_diff > 0. && diff / last_diff >= v {
                         break;
                     }
@@ -258,15 +304,16 @@ pub trait Algorithm<F: ObjFunc>: Sized {
                 }
             }
         }
-        self.base_mut().report();
         self
     }
 }
 
-/// The public API for [`Algorithm`].
+/// A public API for [`Algorithm`].
+///
+/// Users can simply obtain their solution and see the result.
 pub trait Solver<F: ObjFunc>: Algorithm<F> {
     /// Create the task and calling [`Algorithm::run`].
-    fn solve(func: F, settings: Self::Setting, callback: impl Fn()) -> Self {
+    fn solve<C>(func: F, settings: Self::Setting, callback: impl Callback<C>) -> Self {
         Self::create(func, settings).run(callback)
     }
 
@@ -279,7 +326,7 @@ pub trait Solver<F: ObjFunc>: Algorithm<F> {
     /// The algorithm must be executed once.
     fn parameters(&self) -> (Array1<f64>, f64) {
         let b = self.base();
-        (b.best.clone(), b.best_f)
+        (b.best.clone(), b.report.best_f)
     }
 
     /// Get the result of the objective function.
